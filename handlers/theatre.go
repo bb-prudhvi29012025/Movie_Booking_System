@@ -8,7 +8,7 @@ import (
 )
 
 func GetTheatreDetails(w http.ResponseWriter, r *http.Request) {
-	rows, err := db.DB.Query("SELECT id, theatre_name, total_seats, seats_booked, seats_vacant, total_rooms FROM theatre")
+	rows, err := db.DB.Query("SELECT id, theatre_name, total_rooms FROM theatre")
 	if err != nil {
 		log.Println("Database query failed:", err)
 		http.Error(w, "Failed to fetch theatre details", http.StatusInternalServerError)
@@ -17,24 +17,18 @@ func GetTheatreDetails(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	var theatres []struct {
-		ID             int    `json:"id"`
-		Theatre_Name   string `json:"theatre_name"`
-		TotalSeats     int    `json:"total_seats"`
-		SeatsBooked    int    `json:"seats_booked"`
-		SeatsVacant    int    `json:"seats_vacant"`
-		TotalRooms     int    `json:"total_rooms"`
+		ID           int    `json:"id"`
+		Theatre_Name string `json:"theatre_name"`
+		TotalRooms   int    `json:"total_rooms"`
 	}
 
 	for rows.Next() {
 		var theatre struct {
-			ID             int    `json:"id"`
-			Theatre_Name   string `json:"theatre_name"`
-			TotalSeats     int    `json:"total_seats"`
-			SeatsBooked    int    `json:"seats_booked"`
-			SeatsVacant    int    `json:"seats_vacant"`
-			TotalRooms     int    `json:"total_rooms"`
+			ID           int    `json:"id"`
+			Theatre_Name string `json:"theatre_name"`
+			TotalRooms   int    `json:"total_rooms"`
 		}
-		err := rows.Scan(&theatre.ID, &theatre.Theatre_Name, &theatre.TotalSeats, &theatre.SeatsBooked, &theatre.SeatsVacant, &theatre.TotalRooms)
+		err := rows.Scan(&theatre.ID, &theatre.Theatre_Name, &theatre.TotalRooms)
 		if err != nil {
 			log.Println("Error scanning row:", err)
 			http.Error(w, "Error reading theatre data", http.StatusInternalServerError)
