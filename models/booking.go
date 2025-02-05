@@ -1,13 +1,12 @@
-// Changes have to be made in this code
-
 package models
 
 type BookingRequest struct {
-	MovieID   int `json:"movie_id"`
-	TheatreID int `json:"theatre_id"`
+    TheatreName string `json:"theatre_name"`
+    MovieName   string `json:"movie_name"`
+    RoomName    string `json:"room_name,omitempty"`
 }
 
 type BookingResponse struct {
-	Message string `json:"message"`
-	Status  int    `json:"status"`
+    Message string `json:"message"`
+    Status  int    `json:"status"`
 }
