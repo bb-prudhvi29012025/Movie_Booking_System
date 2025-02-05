@@ -95,7 +95,7 @@ func UpdateTheatre(w http.ResponseWriter, r *http.Request) {
 
     for key, value := range updateData {
         if key == "id" {
-            continue // Skip the "id" field
+            continue
         }
 
         query += fmt.Sprintf("%s = ?, ", key)
@@ -247,8 +247,8 @@ func InsertMovie(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_, err = db.DB.Exec(`
-		INSERT INTO movie (movie_name, description)
-		VALUES (?, ?)`,
+		INSERT INTO movie (movie_name, description, created_by, created_on) 
+		VALUES (?, ?, 'System', NOW())`,
 		movie.Movie_Name, movie.Description,
 	)
 	if err != nil {
@@ -261,66 +261,57 @@ func InsertMovie(w http.ResponseWriter, r *http.Request) {
 }
 
 func UpdateMovie(w http.ResponseWriter, r *http.Request) {
-    if r.Method != http.MethodPut {
-        http.Error(w, "Invalid request method", http.StatusMethodNotAllowed)
-        return
-    }
+	if r.Method != http.MethodPut {
+		http.Error(w, "Invalid request method", http.StatusMethodNotAllowed)
+		return
+	}
 
-    if !authenticateSystem(w, r) {
-        return
-    }
+	if !authenticateSystem(w, r) {
+		return
+	}
 
-    var updateData map[string]interface{}
-    err := json.NewDecoder(r.Body).Decode(&updateData)
-    if err != nil {
-        http.Error(w, "Invalid request body", http.StatusBadRequest)
-        return
-    }
+	var updateData map[string]interface{}
+	err := json.NewDecoder(r.Body).Decode(&updateData)
+	if err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
 
-    id, ok := updateData["id"].(float64)
-    if !ok {
-        http.Error(w, "ID is required", http.StatusBadRequest)
-        return
-    }
+	movieID, ok := updateData["movie_id"].(float64)
+	if !ok {
+		http.Error(w, "movie_id is required", http.StatusBadRequest)
+		return
+	}
 
-    var movieName, description string
-    err = db.DB.QueryRow("SELECT movie_name, description FROM movie WHERE id = ?", int(id)).Scan(&movieName, &description)
-    if err != nil {
-        http.Error(w, "Movie not found", http.StatusNotFound)
-        return
-    }
+	query := "UPDATE movie SET "
+	params := []interface{}{}
+	paramCount := 0
 
-    query := "UPDATE movie SET "
-    params := []interface{}{}
-    paramCount := 0
+	for key, value := range updateData {
+		if key == "movie_id" {
+			continue
+		}
 
-    for key, value := range updateData {
-        if key == "id" {
-            continue 
-        }
+		query += fmt.Sprintf("%s = ?, ", key)
+		params = append(params, value)
+		paramCount++
+	}
 
-        query += fmt.Sprintf("%s = ?, ", key)
-        params = append(params, value)
-        paramCount++
-    }
+	if paramCount == 0 {
+		http.Error(w, "No attributes to update", http.StatusBadRequest)
+		return
+	}
 
-    if paramCount == 0 {
-        http.Error(w, "No attributes to update", http.StatusBadRequest)
-        return
-    }
+	query += "updated_by = ?, updated_on = NOW() WHERE id = ?"
+	params = append(params, "System", int(movieID))
 
-    query = query[:len(query)-2]
+	_, err = db.DB.Exec(query, params...)
+	if err != nil {
+		http.Error(w, "Failed to update movie", http.StatusInternalServerError)
+		return
+	}
 
-    query += " WHERE id = ?"
-    params = append(params, int(id))
-
-    _, err = db.DB.Exec(query, params...)
-    if err != nil {
-        http.Error(w, "Failed to update movie", http.StatusInternalServerError)
-        return
-    }
-
-    json.NewEncoder(w).Encode(map[string]string{"message": "Movie updated successfully"})
+	json.NewEncoder(w).Encode(map[string]string{"message": "Movie updated successfully"})
 }
 
 func DeleteMovie(w http.ResponseWriter, r *http.Request) {
@@ -334,7 +325,7 @@ func DeleteMovie(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		ID int `json:"movie_id"`
+		MovieID int `json:"movie_id"`
 	}
 	err := json.NewDecoder(r.Body).Decode(&req)
 	if err != nil {
@@ -342,7 +333,7 @@ func DeleteMovie(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, err = db.DB.Exec("DELETE FROM movie WHERE id = ?", req.ID)
+	_, err = db.DB.Exec("DELETE FROM movie WHERE id = ?", req.MovieID)
 	if err != nil {
 		http.Error(w, "Failed to delete movie", http.StatusInternalServerError)
 		return
@@ -367,7 +358,7 @@ func GetMovieByMovieName(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := db.DB.Query("SELECT id, movie_name, description FROM movie WHERE movie_name = ?", movieName)
+	rows, err := db.DB.Query("SELECT id, movie_name, description FROM movie WHERE LOWER(movie_name) = LOWER(?)", movieName)
 	if err != nil {
 		http.Error(w, "Failed to retrieve movies", http.StatusInternalServerError)
 		return
@@ -410,3 +401,4 @@ func GetMovieByMovieName(w http.ResponseWriter, r *http.Request) {
 	w.Write(jsonData)
 	w.Write([]byte("\n"))
 }
+
