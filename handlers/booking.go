@@ -1,31 +1,148 @@
-// Changes have to be made in this code
-
 package handlers
 
 import (
+	"database/sql"
 	"encoding/json"
-	"log"
+	"fmt"
 	"net/http"
+	"time"
+
+	"github.com/golang-jwt/jwt/v4"
 	"project/db"
 	"project/models"
 	"project/utils"
-
-	"github.com/golang-jwt/jwt/v4"
 )
 
 func BookSeat(w http.ResponseWriter, r *http.Request) {
-	log.Println("Received request at /book-seat")
-
 	if r.Method != http.MethodPost {
 		http.Error(w, "Invalid request method", http.StatusMethodNotAllowed)
 		return
 	}
 
+	var request models.BookingRequest
+	err := json.NewDecoder(r.Body).Decode(&request)
+	if err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	username, err := authenticateUser(r)
+	if err != nil {
+		http.Error(w, "Unauthorized: "+err.Error(), http.StatusUnauthorized)
+		return
+	}
+
+	if request.MovieName != "" && request.TheatreName == "" {
+		rows, err := db.DB.Query("SELECT DISTINCT theatre_name FROM theatre t JOIN room r ON t.id = r.theatre_id WHERE r.movie_name = ?", request.MovieName)
+		if err != nil {
+			http.Error(w, "Database error when fetching theatres", http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+
+		var theatres []string
+		for rows.Next() {
+			var theatreName string
+			err := rows.Scan(&theatreName)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("Error fetching theatre data: %v", err), http.StatusInternalServerError)
+				return
+			}
+			theatres = append(theatres, theatreName)
+		}
+
+		if len(theatres) == 0 {
+			http.Error(w, "No theatres found screening this movie", http.StatusNotFound)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"message":         "Multiple theatres available. Choose one.",
+			"theatre_choices": theatres,
+		})
+		return
+	}
+
+	var movieID int
+	err = db.DB.QueryRow("SELECT id FROM movie WHERE movie_name = ?", request.MovieName).Scan(&movieID)
+	if err == sql.ErrNoRows {
+		http.Error(w, "Movie is not screening anywhere", http.StatusNotFound)
+		return
+	} else if err != nil {
+		http.Error(w, fmt.Sprintf("Database error when fetching movie: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	var theatreID int
+	err = db.DB.QueryRow("SELECT id FROM theatre WHERE theatre_name = ?", request.TheatreName).Scan(&theatreID)
+	if err == sql.ErrNoRows {
+		http.Error(w, "Theatre not found", http.StatusNotFound)
+		return
+	} else if err != nil {
+		http.Error(w, fmt.Sprintf("Database error when fetching theatre: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	if request.RoomName != "" {
+		var roomID int
+		err = db.DB.QueryRow("SELECT id FROM room WHERE room_name = ? AND theatre_id = ? AND movie_name = ?", request.RoomName, theatreID, request.MovieName).Scan(&roomID)
+		if err == sql.ErrNoRows {
+			http.Error(w, "Movie is not screening in the mentioned theatre and room", http.StatusNotFound)
+			return
+		} else if err != nil {
+			http.Error(w, fmt.Sprintf("Database error when fetching room: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		bookSeat(roomID, theatreID, username, w)
+		return
+	}
+
+	rows, err := db.DB.Query("SELECT id, room_name FROM room WHERE theatre_id = ? AND movie_name = ?", theatreID, request.MovieName)
+	if err != nil {
+		http.Error(w, "Database error when fetching rooms", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var rooms []models.Room
+	for rows.Next() {
+		var room models.Room
+		err := rows.Scan(&room.ID, &room.RoomName)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Error fetching room data: %v", err), http.StatusInternalServerError)
+			return
+		}
+		rooms = append(rooms, room)
+	}
+
+	if len(rooms) == 0 {
+		http.Error(w, "Movie is not screening in this theatre", http.StatusNotFound)
+		return
+	}
+
+	if len(rooms) == 1 {
+		bookSeat(rooms[0].ID, theatreID, username, w)
+		return
+	}
+
+	var roomChoices []string
+	for _, room := range rooms {
+		roomChoices = append(roomChoices, room.RoomName)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"message":      "Multiple rooms available. Choose one.",
+		"room_choices": roomChoices,
+	})
+}
+
+func authenticateUser(r *http.Request) (string, error) {
 	cookie, err := r.Cookie("token")
 	if err != nil {
-		log.Printf("Error retrieving token: %v", err)
-		http.Error(w, "Unauthorized: Token not provided", http.StatusUnauthorized)
-		return
+		return "", fmt.Errorf("token not provided")
 	}
 
 	claims := &models.Claims{}
@@ -33,80 +150,37 @@ func BookSeat(w http.ResponseWriter, r *http.Request) {
 		return utils.JwtKey, nil
 	})
 	if err != nil || !token.Valid {
-		log.Printf("Invalid token: %v", err)
-		http.Error(w, "Unauthorized: Invalid token", http.StatusUnauthorized)
-		return
+		return "", fmt.Errorf("invalid token")
 	}
 
-	username := claims.Username
-	log.Printf("Authorized user: %s", username)
+	return claims.Username, nil
+}
 
-	var bookingRequest models.BookingRequest
-	err = json.NewDecoder(r.Body).Decode(&bookingRequest)
+func bookSeat(roomID, theatreID int, username string, w http.ResponseWriter) {
+	var seatsVacant, seatsBooked int
+	err := db.DB.QueryRow("SELECT seats_vacant, seats_booked FROM room WHERE id = ?", roomID).Scan(&seatsVacant, &seatsBooked)
 	if err != nil {
-		log.Printf("Error decoding request: %v", err)
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		http.Error(w, fmt.Sprintf("Error fetching seat data: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	theatreID := bookingRequest.TheatreID
-	movieID := bookingRequest.MovieID
-
-	var requestedMovieName string
-	err = db.DB.QueryRow("SELECT name FROM movies WHERE id = ?", movieID).Scan(&requestedMovieName)
-	if err != nil {
-		log.Printf("Movie ID %d not found", movieID)
-		http.Error(w, "Invalid Movie ID", http.StatusBadRequest)
-		return
-	}
-
-	var theatreMovieName string
-	err = db.DB.QueryRow("SELECT movie FROM theatre WHERE id = ?", theatreID).Scan(&theatreMovieName)
-	if err != nil {
-		log.Printf("Theatre ID %d not found", theatreID)
-		http.Error(w, "Invalid Theatre ID", http.StatusNotFound)
-		return
-	}
-
-	if requestedMovieName != theatreMovieName {
-		log.Printf("Mismatch: Requested movie '%s' is not screening in Theatre ID %d", requestedMovieName, theatreID)
-		http.Error(w, "Movie was not screening in this theatre", http.StatusConflict)
-		return
-	}
-
-	var availableSeats int
-	err = db.DB.QueryRow("SELECT seats_vacant FROM theatre WHERE id = ?", theatreID).Scan(&availableSeats)
-	if err != nil {
-		log.Printf("Error querying seats for Theatre ID %d: %v", theatreID, err)
-		http.Error(w, "Theatre not found", http.StatusNotFound)
-		return
-	}
-
-	if availableSeats <= 0 {
-		log.Println("No seats available")
+	if seatsVacant <= 0 {
 		http.Error(w, "No seats available", http.StatusConflict)
 		return
 	}
 
-	_, err = db.DB.Exec(
-		`UPDATE theatre 
-		 SET seats_booked = seats_booked + 1, 
-		     seats_vacant = seats_vacant - 1, 
-		     updated_by = ?, 
-		     updated_on = CURRENT_TIMESTAMP 
-		 WHERE id = ?`,
-		username, theatreID,
-	)
+	_, err = db.DB.Exec("UPDATE room SET seats_vacant = seats_vacant - 1, seats_booked = seats_booked + 1, updated_by = ?, updated_on = ? WHERE id = ?", username, time.Now(), roomID)
 	if err != nil {
-		log.Printf("Error updating seats: %v", err)
-		http.Error(w, "Failed to book seat", http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("Failed to update room details: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	response := models.BookingResponse{
-		Message: "Seat booked successfully",
-		Status:  http.StatusOK,
+	_, err = db.DB.Exec("UPDATE theatre SET updated_by = ?, updated_on = ? WHERE id = ?", username, time.Now(), theatreID)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to update theatre details: %v", err), http.StatusInternalServerError)
+		return
 	}
+
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(response)
+	w.Write([]byte("Seat booked successfully\n"))
 }
