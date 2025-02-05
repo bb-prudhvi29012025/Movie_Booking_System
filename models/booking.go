@@ -1,3 +1,5 @@
+// Changes have to be made in this code
+
 package models
 
 type BookingRequest struct {
