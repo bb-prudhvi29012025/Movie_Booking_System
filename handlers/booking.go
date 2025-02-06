@@ -95,7 +95,7 @@ func BookSeat(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		bookSeat(roomID, theatreID, username, w)
+		bookSeats(roomID, theatreID, username, request.NoOfSeats, w)
 		return
 	}
 
@@ -123,7 +123,7 @@ func BookSeat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(rooms) == 1 {
-		bookSeat(rooms[0].ID, theatreID, username, w)
+		bookSeats(rooms[0].ID, theatreID, username, request.NoOfSeats, w)
 		return
 	}
 
@@ -156,7 +156,7 @@ func authenticateUser(r *http.Request) (string, error) {
 	return claims.Username, nil
 }
 
-func bookSeat(roomID, theatreID int, username string, w http.ResponseWriter) {
+func bookSeats(roomID, theatreID int, username string, noOfSeats int, w http.ResponseWriter) {
 	var seatsVacant, seatsBooked int
 	err := db.DB.QueryRow("SELECT seats_vacant, seats_booked FROM room WHERE id = ?", roomID).Scan(&seatsVacant, &seatsBooked)
 	if err != nil {
@@ -164,12 +164,12 @@ func bookSeat(roomID, theatreID int, username string, w http.ResponseWriter) {
 		return
 	}
 
-	if seatsVacant <= 0 {
-		http.Error(w, "No seats available", http.StatusConflict)
+	if seatsVacant < noOfSeats {
+		http.Error(w, "Not enough seats available", http.StatusConflict)
 		return
 	}
 
-	_, err = db.DB.Exec("UPDATE room SET seats_vacant = seats_vacant - 1, seats_booked = seats_booked + 1, updated_by = ?, updated_on = ? WHERE id = ?", username, time.Now(), roomID)
+	_, err = db.DB.Exec("UPDATE room SET seats_vacant = seats_vacant - ?, seats_booked = seats_booked + ?, updated_by = ?, updated_on = ? WHERE id = ?", noOfSeats, noOfSeats, username, time.Now(), roomID)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to update room details: %v", err), http.StatusInternalServerError)
 		return
@@ -182,5 +182,5 @@ func bookSeat(roomID, theatreID int, username string, w http.ResponseWriter) {
 	}
 
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("Seat booked successfully\n"))
+	w.Write([]byte(fmt.Sprintf("%d seats booked successfully\n", noOfSeats)))
 }
