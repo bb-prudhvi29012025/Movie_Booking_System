@@ -7,6 +7,8 @@ import (
 	"project/db"
 	"project/models"
 	"time"
+	"strings"
+	"strconv"
 )
 
 func authenticateSystem(w http.ResponseWriter, r *http.Request) bool {
@@ -28,98 +30,237 @@ func InsertTheatre(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var theatre models.Theatre
+	var theatre struct {
+		Theatre_Name string `json:"theatre_name"`
+		Total_Rooms  int    `json:"total_rooms"`
+	}
+
 	err := json.NewDecoder(r.Body).Decode(&theatre)
 	if err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 
-	if theatre.TotalSeats <= 10 {
-		http.Error(w, "Total seats must be greater than 10", http.StatusBadRequest)
+	tx, err := db.DB.Begin()
+	if err != nil {
+		http.Error(w, "Failed to start transaction", http.StatusInternalServerError)
 		return
 	}
 
-	_, err = db.DB.Exec(`
-		INSERT INTO theatre (theatre_name, total_seats, seats_booked, seats_vacant, total_rooms, created_by, created_on)
-		VALUES (?, ?, 0, ?, ?, 'System', ?)`,
-		theatre.Theatre_Name, theatre.TotalSeats, theatre.TotalSeats, theatre.Total_Rooms, time.Now(),
+	result, err := tx.Exec(`
+		INSERT INTO theatre (theatre_name, total_rooms, created_by, created_on)
+		VALUES (?, ?, 'System', ?)`,
+		theatre.Theatre_Name, theatre.Total_Rooms, time.Now(),
 	)
+
 	if err != nil {
+		tx.Rollback()
 		http.Error(w, "Failed to insert theatre", http.StatusInternalServerError)
 		return
 	}
 
+	theatreID, err := result.LastInsertId()
+	if err != nil {
+		tx.Rollback()
+		http.Error(w, "Failed to retrieve theatre ID", http.StatusInternalServerError)
+		return
+	}
+
+	var roomIDs []int64
+	for i := 0; i < theatre.Total_Rooms; i++ {
+		result, err := tx.Exec(`
+			INSERT INTO room (theatre_id, created_by, created_on)
+			VALUES (?, 'System', ?)`,
+			theatreID, time.Now(),
+		)
+
+		if err != nil {
+			tx.Rollback()
+			http.Error(w, "Failed to insert rooms", http.StatusInternalServerError)
+			return
+		}
+
+		roomID, err := result.LastInsertId()
+		if err != nil {
+			tx.Rollback()
+			http.Error(w, "Failed to retrieve room ID", http.StatusInternalServerError)
+			return
+		}
+
+		roomIDs = append(roomIDs, roomID)
+	}
+
+	err = tx.Commit()
+	if err != nil {
+		http.Error(w, "Transaction commit failed", http.StatusInternalServerError)
+		return
+	}
+
+	response := map[string]interface{}{
+		"message":    "Theatre and rooms added successfully",
+		"theatre_id": theatreID,
+		"room_ids":   roomIDs,
+	}
+
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]string{"message": "Theatre added successfully"})
+	json.NewEncoder(w).Encode(response)
 }
 
 func UpdateTheatre(w http.ResponseWriter, r *http.Request) {
-    if r.Method != http.MethodPut {
-        http.Error(w, "Invalid request method", http.StatusMethodNotAllowed)
-        return
-    }
+	if r.Method != http.MethodPut {
+		http.Error(w, "Invalid request method", http.StatusMethodNotAllowed)
+		return
+	}
 
-    if !authenticateSystem(w, r) {
-        return
-    }
+	if !authenticateSystem(w, r) {
+		return
+	}
 
-    var updateData map[string]interface{}
-    err := json.NewDecoder(r.Body).Decode(&updateData)
-    if err != nil {
-        http.Error(w, "Invalid request body", http.StatusBadRequest)
-        return
-    }
+	var updateData map[string]interface{}
+	err := json.NewDecoder(r.Body).Decode(&updateData)
+	if err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
 
-    id, ok := updateData["id"].(float64)
-    if !ok {
-        http.Error(w, "ID is required", http.StatusBadRequest)
-        return
-    }
+	theatreID, ok := updateData["theatre_id"].(float64)
+	if !ok {
+		http.Error(w, "Theatre ID is required", http.StatusBadRequest)
+		return
+	}
 
-    var seatsBooked int
-    err = db.DB.QueryRow("SELECT seats_booked FROM theatre WHERE id = ?", int(id)).Scan(&seatsBooked)
-    if err != nil {
-        http.Error(w, "Theatre not found", http.StatusNotFound)
-        return
-    }
+	var oldTotalRooms int
+	err = db.DB.QueryRow("SELECT total_rooms FROM theatre WHERE id = ?", int(theatreID)).Scan(&oldTotalRooms)
+	if err != nil {
+		http.Error(w, "Failed to fetch current total_rooms", http.StatusInternalServerError)
+		return
+	}
 
-    if totalSeatsVal, ok := updateData["total_seats"].(float64); ok && totalSeatsVal < float64(seatsBooked) {
-        http.Error(w, "Total seats cannot be less than booked seats", http.StatusBadRequest)
-        return
-    }
+	// Track created and deleted room IDs
+	var createdRoomIDs []int
+	var deletedRoomIDs []int
 
-    query := "UPDATE theatre SET "
-    params := []interface{}{}
-    paramCount := 0
+	newTotalRooms, ok := updateData["total_rooms"].(float64)
+	if ok && int(newTotalRooms) != oldTotalRooms {
+		difference := int(newTotalRooms) - oldTotalRooms
 
-    for key, value := range updateData {
-        if key == "id" {
-            continue
-        }
+		if difference < 0 { // Decrease in rooms
+			// Fetch all room IDs for the theatre
+			rows, err := db.DB.Query("SELECT id FROM room WHERE theatre_id = ?", int(theatreID))
+			if err != nil {
+				http.Error(w, "Failed to fetch room IDs", http.StatusInternalServerError)
+				return
+			}
+			defer rows.Close()
 
-        query += fmt.Sprintf("%s = ?, ", key)
-        params = append(params, value)
-        paramCount++
-    }
+			var roomIDs []int
+			for rows.Next() {
+				var roomID int
+				if err := rows.Scan(&roomID); err != nil {
+					http.Error(w, "Failed to scan room IDs", http.StatusInternalServerError)
+					return
+				}
+				roomIDs = append(roomIDs, roomID)
+			}
 
-    if paramCount == 0 {
-        http.Error(w, "No attributes to update", http.StatusBadRequest)
-        return
-    }
+			// Get room IDs to delete from query params
+			roomIDsStr := r.URL.Query().Get("room_ids")
+			if roomIDsStr == "" {
+				http.Error(w, "Room IDs to delete must be provided", http.StatusBadRequest)
+				return
+			}
 
-    query = query[:len(query)-2]
+			ids := strings.Split(roomIDsStr, ",")
+			if len(ids) != -difference {
+				http.Error(w, fmt.Sprintf("You must provide exactly %d room IDs to delete", -difference), http.StatusBadRequest)
+				return
+			}
 
-    query += ", updated_by = 'System', updated_on = ? WHERE id = ?"
-    params = append(params, time.Now(), int(id))
+			for _, idStr := range ids {
+				roomID, err := strconv.Atoi(idStr)
+				if err != nil {
+					http.Error(w, "Invalid room ID format", http.StatusBadRequest)
+					return
+				}
+				_, err = db.DB.Exec("DELETE FROM room WHERE id = ?", roomID)
+				if err != nil {
+					http.Error(w, "Failed to delete room", http.StatusInternalServerError)
+					return
+				}
+				deletedRoomIDs = append(deletedRoomIDs, roomID)
+			}
+		} else if difference > 0 { // Increase in rooms
+			tx, err := db.DB.Begin()
+			if err != nil {
+				http.Error(w, "Failed to start transaction", http.StatusInternalServerError)
+				return
+			}
 
-    _, err = db.DB.Exec(query, params...)
-    if err != nil {
-        http.Error(w, "Failed to update theatre", http.StatusInternalServerError)
-        return
-    }
+			for i := 0; i < difference; i++ {
+				result, err := tx.Exec(`
+					INSERT INTO room (theatre_id, created_by, created_on)
+					VALUES (?, 'System', ?)`,
+					theatreID, time.Now(),
+				)
+				if err != nil {
+					tx.Rollback()
+					http.Error(w, "Failed to add new rooms", http.StatusInternalServerError)
+					return
+				}
 
-    json.NewEncoder(w).Encode(map[string]string{"message": "Theatre updated successfully"})
+				roomID, err := result.LastInsertId()
+				if err != nil {
+					tx.Rollback()
+					http.Error(w, "Failed to get last inserted room ID", http.StatusInternalServerError)
+					return
+				}
+				createdRoomIDs = append(createdRoomIDs, int(roomID))
+			}
+
+			err = tx.Commit()
+			if err != nil {
+				http.Error(w, "Failed to commit transaction", http.StatusInternalServerError)
+				return
+			}
+		}
+	}
+
+	// Update theatre information
+	query := "UPDATE theatre SET "
+	params := []interface{}{}
+	paramCount := 0
+
+	for key, value := range updateData {
+		if key == "theatre_id" {
+			continue
+		}
+		query += fmt.Sprintf("%s = ?, ", key)
+		params = append(params, value)
+		paramCount++
+	}
+
+	if paramCount == 0 {
+		http.Error(w, "No attributes to update", http.StatusBadRequest)
+		return
+	}
+
+	query = query[:len(query)-2] // Remove the trailing comma
+	query += ", updated_by = 'System', updated_on = ? WHERE id = ?"
+	params = append(params, time.Now(), int(theatreID))
+
+	_, err = db.DB.Exec(query, params...)
+	if err != nil {
+		http.Error(w, "Failed to update theatre", http.StatusInternalServerError)
+		return
+	}
+
+	response := map[string]interface{}{
+		"message":          "Theatre updated successfully",
+		"created_room_ids": createdRoomIDs,
+		"deleted_room_ids": deletedRoomIDs,
+	}
+
+	json.NewEncoder(w).Encode(response)
 }
 
 func DeleteTheatre(w http.ResponseWriter, r *http.Request) {
@@ -129,6 +270,7 @@ func DeleteTheatre(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !authenticateSystem(w, r) {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
 
@@ -141,25 +283,44 @@ func DeleteTheatre(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var bookedSeats int
-	err = db.DB.QueryRow("SELECT seats_booked FROM theatre WHERE id = ?", req.ID).Scan(&bookedSeats)
+	tx, err := db.DB.Begin()
 	if err != nil {
-		http.Error(w, "Theatre not found", http.StatusNotFound)
+		http.Error(w, "Failed to start transaction", http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback()
+
+	var totalBookedSeats int
+	err = tx.QueryRow("SELECT COALESCE(SUM(seats_booked), 0) FROM room WHERE theatre_id = ?", req.ID).Scan(&totalBookedSeats)
+	if err != nil {
+		http.Error(w, "Failed to check booked seats", http.StatusInternalServerError)
 		return
 	}
 
-	if bookedSeats > 0 {
+	if totalBookedSeats > 0 {
 		http.Error(w, "Cannot delete theatre with booked seats", http.StatusConflict)
 		return
 	}
 
-	_, err = db.DB.Exec("DELETE FROM theatre WHERE id = ?", req.ID)
+	_, err = tx.Exec("DELETE FROM room WHERE theatre_id = ?", req.ID)
+	if err != nil {
+		http.Error(w, "Failed to delete related rooms", http.StatusInternalServerError)
+		return
+	}
+
+	_, err = tx.Exec("DELETE FROM theatre WHERE id = ?", req.ID)
 	if err != nil {
 		http.Error(w, "Failed to delete theatre", http.StatusInternalServerError)
 		return
 	}
 
-	json.NewEncoder(w).Encode(map[string]string{"message": "Theatre deleted successfully"})
+	err = tx.Commit()
+	if err != nil {
+		http.Error(w, "Failed to commit transaction", http.StatusInternalServerError)
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]string{"message": "Theatre and related rooms deleted successfully"})
 }
 
 func GetTheatreByTheatreName(w http.ResponseWriter, r *http.Request) {
@@ -178,7 +339,7 @@ func GetTheatreByTheatreName(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := db.DB.Query("SELECT id, theatre_name, total_seats, seats_booked, seats_vacant, total_rooms FROM theatre WHERE theatre_name = ?", theatreName)
+	rows, err := db.DB.Query("SELECT id, theatre_name, total_rooms FROM theatre WHERE theatre_name = ?", theatreName)
 	if err != nil {
 		http.Error(w, "Failed to retrieve theatres", http.StatusInternalServerError)
 		return
@@ -186,24 +347,18 @@ func GetTheatreByTheatreName(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	var theatres []struct {
-		ID          int    `json:"id"`
+		ID           int    `json:"id"`
 		Theatre_Name string `json:"theatre_name"`
-		TotalSeats  int    `json:"total_seats"`
-		SeatsBooked int    `json:"seats_booked"`
-		SeatsVacant int    `json:"seats_vacant"`
-		RoomNo      int    `json:"total_rooms"`
+		TotalRooms   int    `json:"total_rooms"`
 	}
 
 	for rows.Next() {
 		var theatre struct {
-			ID          int    `json:"id"`
+			ID           int    `json:"id"`
 			Theatre_Name string `json:"theatre_name"`
-			TotalSeats  int    `json:"total_seats"`
-			SeatsBooked int    `json:"seats_booked"`
-			SeatsVacant int    `json:"seats_vacant"`
-			RoomNo      int    `json:"total_rooms"`
+			TotalRooms   int    `json:"total_rooms"`
 		}
-		err := rows.Scan(&theatre.ID, &theatre.Theatre_Name, &theatre.TotalSeats, &theatre.SeatsBooked, &theatre.SeatsVacant, &theatre.RoomNo)
+		err := rows.Scan(&theatre.ID, &theatre.Theatre_Name, &theatre.TotalRooms)
 		if err != nil {
 			http.Error(w, "Failed to read theatre data", http.StatusInternalServerError)
 			return
@@ -217,7 +372,6 @@ func GetTheatreByTheatreName(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-
 	jsonData, err := json.MarshalIndent(theatres, "", "  ")
 	if err != nil {
 		http.Error(w, "Failed to encode data", http.StatusInternalServerError)
