@@ -319,7 +319,7 @@ func DeleteTheatre(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"message": "Theatre and related rooms deleted successfully"})
 }
 
-func GetTheatreByTheatreName(w http.ResponseWriter, r *http.Request) {
+func GetTheatreByTheatreID(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Invalid request method", http.StatusMethodNotAllowed)
 		return
@@ -329,13 +329,13 @@ func GetTheatreByTheatreName(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	theatreName := r.URL.Query().Get("theatre_name")
-	if theatreName == "" {
-		http.Error(w, "Theatre name is required", http.StatusBadRequest)
+	theatreID := r.URL.Query().Get("theatre_id")
+	if theatreID == "" {
+		http.Error(w, "Theatre ID is required", http.StatusBadRequest)
 		return
 	}
 
-	rows, err := db.DB.Query("SELECT id, theatre_name, total_rooms FROM theatre WHERE theatre_name = ?", theatreName)
+	rows, err := db.DB.Query("SELECT id, theatre_name, total_rooms FROM theatre WHERE id = ?", theatreID)
 	if err != nil {
 		http.Error(w, "Failed to retrieve theatres", http.StatusInternalServerError)
 		return
@@ -363,7 +363,7 @@ func GetTheatreByTheatreName(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(theatres) == 0 {
-		http.Error(w, "No theatres found with the given theatre name", http.StatusNotFound)
+		http.Error(w, "No theatres found with the given theatre ID", http.StatusNotFound)
 		return
 	}
 
@@ -492,7 +492,7 @@ func DeleteMovie(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"message": "Movie deleted successfully"})
 }
 
-func GetMovieByMovieName(w http.ResponseWriter, r *http.Request) {
+func GetMovieByMovieID(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Invalid request method", http.StatusMethodNotAllowed)
 		return
@@ -502,13 +502,13 @@ func GetMovieByMovieName(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	movieName := r.URL.Query().Get("movie_name")
-	if movieName == "" {
-		http.Error(w, "Movie name is required", http.StatusBadRequest)
+	movieID := r.URL.Query().Get("movie_id")
+	if movieID == "" {
+		http.Error(w, "Movie ID is required", http.StatusBadRequest)
 		return
 	}
 
-	rows, err := db.DB.Query("SELECT id, movie_name, description FROM movie WHERE LOWER(movie_name) = LOWER(?)", movieName)
+	rows, err := db.DB.Query("SELECT id, movie_name, description FROM movie WHERE id = ?", movieID)
 	if err != nil {
 		http.Error(w, "Failed to retrieve movies", http.StatusInternalServerError)
 		return
@@ -536,7 +536,7 @@ func GetMovieByMovieName(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(movies) == 0 {
-		http.Error(w, "No movies found with the given movie name", http.StatusNotFound)
+		http.Error(w, "No movies found with the given movie ID", http.StatusNotFound)
 		return
 	}
 
@@ -551,4 +551,3 @@ func GetMovieByMovieName(w http.ResponseWriter, r *http.Request) {
 	w.Write(jsonData)
 	w.Write([]byte("\n"))
 }
-
