@@ -18,12 +18,12 @@ func main() {
 	http.HandleFunc("/theatre/add", handlers.InsertTheatre)
 	http.HandleFunc("/theatre/update", handlers.UpdateTheatre)
 	http.HandleFunc("/theatre/delete", handlers.DeleteTheatre)
-	http.HandleFunc("/theatre/search", handlers.GetTheatreByTheatreName)
+	http.HandleFunc("/theatre/search", handlers.GetTheatreByTheatreID)
 
 	http.HandleFunc("/movie/add", handlers.InsertMovie)
 	http.HandleFunc("/movie/update", handlers.UpdateMovie)
 	http.HandleFunc("/movie/delete", handlers.DeleteMovie)
-	http.HandleFunc("/movie/search", handlers.GetMovieByMovieName)
+	http.HandleFunc("/movie/search", handlers.GetMovieByMovieID)
 
 	log.Println("Server running on http://localhost:8081")
 	log.Fatal(http.ListenAndServe(":8081", nil))
