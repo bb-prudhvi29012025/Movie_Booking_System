@@ -26,6 +26,11 @@ func BookSeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if request.NoOfSeats <= 0 {
+		http.Error(w, "Number of seats must be a positive integer", http.StatusBadRequest)
+		return
+	}
+
 	username, err := authenticateUser(r)
 	if err != nil {
 		http.Error(w, "Unauthorized: "+err.Error(), http.StatusUnauthorized)
