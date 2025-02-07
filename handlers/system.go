@@ -136,7 +136,6 @@ func UpdateTheatre(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Track created and deleted room IDs
 	var createdRoomIDs []int
 	var deletedRoomIDs []int
 
@@ -144,8 +143,7 @@ func UpdateTheatre(w http.ResponseWriter, r *http.Request) {
 	if ok && int(newTotalRooms) != oldTotalRooms {
 		difference := int(newTotalRooms) - oldTotalRooms
 
-		if difference < 0 { // Decrease in rooms
-			// Fetch all room IDs for the theatre
+		if difference < 0 {
 			rows, err := db.DB.Query("SELECT id FROM room WHERE theatre_id = ?", int(theatreID))
 			if err != nil {
 				http.Error(w, "Failed to fetch room IDs", http.StatusInternalServerError)
@@ -163,7 +161,6 @@ func UpdateTheatre(w http.ResponseWriter, r *http.Request) {
 				roomIDs = append(roomIDs, roomID)
 			}
 
-			// Get room IDs to delete from query params
 			roomIDsStr := r.URL.Query().Get("room_ids")
 			if roomIDsStr == "" {
 				http.Error(w, "Room IDs to delete must be provided", http.StatusBadRequest)
@@ -189,7 +186,7 @@ func UpdateTheatre(w http.ResponseWriter, r *http.Request) {
 				}
 				deletedRoomIDs = append(deletedRoomIDs, roomID)
 			}
-		} else if difference > 0 { // Increase in rooms
+		} else if difference > 0 {
 			tx, err := db.DB.Begin()
 			if err != nil {
 				http.Error(w, "Failed to start transaction", http.StatusInternalServerError)
@@ -225,7 +222,6 @@ func UpdateTheatre(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Update theatre information
 	query := "UPDATE theatre SET "
 	params := []interface{}{}
 	paramCount := 0
@@ -244,7 +240,7 @@ func UpdateTheatre(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	query = query[:len(query)-2] // Remove the trailing comma
+	query = query[:len(query)-2]
 	query += ", updated_by = 'System', updated_on = ? WHERE id = ?"
 	params = append(params, time.Now(), int(theatreID))
 
